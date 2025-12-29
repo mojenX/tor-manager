@@ -2,13 +2,30 @@
 #!/usr/bin/env bash
 set -e
 
-REPO="https://github.com/mojenX/tor-manager"
-APP="mojenx-tor"
-DIR="/opt/${APP}"
-BIN="/usr/local/bin/${APP}"
-USER="mojenX"
+#######################################
+# CONFIG
+#######################################
 
-banner() {
+APP_NAME="mojenx-tor"
+RUN_USER="mojenX"
+INSTALL_DIR="/opt/${APP_NAME}"
+BIN_PATH="/usr/local/bin/${APP_NAME}"
+LOG_FILE="/var/log/mojenx-tor.log"
+REPO_URL="https://github.com/mojenX/tor-manager"
+
+#######################################
+# BASIC CHECKS
+#######################################
+
+if [[ $EUID -ne 0 ]]; then
+  echo "[ERROR] Please run as root"
+  exit 1
+fi
+
+#######################################
+# BANNER
+#######################################
+
 cat <<'EOF'
 ███╗   ███╗  ██████╗      ██╗███████╗███╗   ██╗██╗  ██╗
 ████╗ ████║ ██╔═══██╗     ██║██╔════╝████╗  ██║╚██╗██╔╝
@@ -16,37 +33,104 @@ cat <<'EOF'
 ██║╚██╔╝██║ ██║   ██║██   ██║██╔══╝  ██║╚██╗██║ ██╔██╗
 ██║ ╚═╝ ██║ ╚██████╔╝╚█████╔╝███████╗██║ ╚████║██╔╝ ██╗
 ╚═╝     ╚═╝  ╚═════╝  ╚════╝ ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝
-        mojenx-tor | Multi-Instance Tor Manager
+        MOJENX TOR MANAGER INSTALLER
 EOF
-}
 
-banner
+#######################################
+# DEPENDENCIES
+#######################################
 
-[[ $EUID -ne 0 ]] && echo "Run as root" && exit 1
-
-echo "[+] Installing dependencies..."
+echo "[+] Updating system & installing dependencies..."
 apt update -y
-apt install -y tor git curl golang build-essential ca-certificates
+apt install -y \
+  tor \
+  curl \
+  git \
+  golang \
+  build-essential \
+  cron \
+  netcat-openbsd \
+  ca-certificates
 
-echo "[+] Creating user..."
-id "${USER}" &>/dev/null || useradd -r -s /usr/sbin/nologin "${USER}"
+#######################################
+# USER
+#######################################
 
-echo "[+] Fetching source..."
-rm -rf "${DIR}"
-git clone "${REPO}" "${DIR}"
-cd "${DIR}"
+echo "[+] Creating user ${RUN_USER}..."
+if ! id "${RUN_USER}" &>/dev/null; then
+  useradd -r -s /usr/sbin/nologin "${RUN_USER}"
+else
+  echo "[+] User ${RUN_USER} already exists"
+fi
+
+#######################################
+# DIRECTORIES
+#######################################
+
+echo "[+] Preparing directories..."
+mkdir -p "${INSTALL_DIR}"
+touch "${LOG_FILE}"
+chown root:root "${LOG_FILE}"
+chmod 644 "${LOG_FILE}"
+
+#######################################
+# FETCH SOURCE
+#######################################
+
+echo "[+] Fetching source code..."
+rm -rf "${INSTALL_DIR}"
+git clone "${REPO_URL}" "${INSTALL_DIR}"
+cd "${INSTALL_DIR}"
+
+#######################################
+# GO MODULES
+#######################################
 
 echo "[+] Preparing Go modules..."
-[ ! -f go.mod ] && go mod init mojenx-tor
+if [[ ! -f go.mod ]]; then
+  go mod init "${APP_NAME}"
+fi
 go mod tidy
 
-echo "[+] Building..."
-go build -o "${BIN}"
-chmod +x "${BIN}"
+#######################################
+# BUILD
+#######################################
+
+echo "[+] Building ${APP_NAME}..."
+go build -o "${BIN_PATH}"
+chmod +x "${BIN_PATH}"
+
+#######################################
+# TOR CONFIG CHECK
+#######################################
+
+echo "[+] Ensuring ControlPort is enabled..."
+
+if ! grep -q "^ControlPort 9051" /etc/tor/torrc; then
+  echo "ControlPort 9051" >> /etc/tor/torrc
+fi
+
+if ! grep -q "^CookieAuthentication 0" /etc/tor/torrc; then
+  echo "CookieAuthentication 0" >> /etc/tor/torrc
+fi
+
+systemctl restart tor
+
+#######################################
+# FINISH
+#######################################
 
 echo
-echo "[✓] Build complete"
-echo "[✓] Starting mojenx-tor (Ctrl+C to stop)"
-echo "---------------------------------------"
+echo "[✓] Installation completed successfully"
+echo "[✓] Run Tor Manager with:"
+echo
+echo "    ${APP_NAME}"
+echo
+echo "[i] Log file: ${LOG_FILE}"
+echo "[i] Tor SOCKS: 127.0.0.1:9050"
+echo "[i] Tor CTRL : 127.0.0.1:9051"
+echo
+echo "----------------------------------------"
 
-exec "${BIN}"
+exec "${BIN_PATH}"
+
