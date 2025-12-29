@@ -243,84 +243,104 @@ func printMenu() {
 // MAIN LOOP (SAFE INPUT)
 //////////////////////////////////////////////////
 
+// Helper: prefer /dev/tty so the menu keeps working even if STDIN closes
+func getInteractiveReader() (*bufio.Reader, io.Closer) {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err == nil {
+		return bufio.NewReader(tty), tty
+	}
+	// Fallback to STDIN if /dev/tty is not available
+	return bufio.NewReader(os.Stdin), nil
+}
+
 func menu() {
- reader := bufio.NewReader(os.Stdin)
+	reader, closer := getInteractiveReader()
+	if closer != nil {
+		// ensure we release the tty handle when leaving the menu
+		defer closer.Close()
+	}
 
- // فقط یک‌بار
- printHeader()
- printMenu()
+	// فقط یک‌بار
+	printHeader()
+	printMenu()
 
- for {
-  fmt.Print("\nSelect option: ")
-  // --- CHANGED: capture the error and handle EOF to stop the loop gracefully ---
-  choice, err := reader.ReadString('\n')
-  if err != nil {
-   if err == io.EOF {
-    fmt.Println("Bye 👋")
-    return // exit the menu loop when stdin is closed
-   }
-   fmt.Println("Input error:", err)
-   time.Sleep(200 * time.Millisecond) // small delay to avoid tight loop on repeated errors
-   continue
-  }
-  choice = strings.TrimSpace(choice)
+	for {
+		fmt.Print("\nSelect option: ")
+		// --- updated: on EOF, reattach to /dev/tty instead of exiting ---
+		choice, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				fmt.Println("STDIN closed, switching to terminal...")
+				if closer != nil {
+					closer.Close()
+					closer = nil
+				}
+				// Try to reattach to a live terminal device and continue
+				reader, closer = getInteractiveReader()
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			fmt.Println("Input error:", err)
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+		choice = strings.TrimSpace(choice)
 
-  // 🔥 فیکس اصلی: ورودی خالی نادیده گرفته می‌شود
-  if choice == "" {
-   continue
-  }
+		// 🔥 فیکس اصلی: ورودی خالی نادیده گرفته می‌شود
+		if choice == "" {
+			continue
+		}
 
-  switch choice {
+		switch choice {
+		case "1":
+			torStart()
+			fmt.Println("✔ Tor started")
 
-  case "1":
-   torStart()
-   fmt.Println("✔ Tor started")
+		case "2":
+			torStop()
+			fmt.Println("✔ Tor stopped")
 
-  case "2":
-   torStop()
-   fmt.Println("✔ Tor stopped")
+		case "3":
+			torRestart()
+			fmt.Println("✔ Tor restarted")
 
-  case "3":
-   torRestart()
-   fmt.Println("✔ Tor restarted")
+		case "4":
+			fmt.Println("Tor Status:", torStatus())
 
-  case "4":
-   fmt.Println("Tor Status:", torStatus())
+		case "5":
+			fmt.Println("Tor IP:", getTorIP())
 
-  case "5":
-   fmt.Println("Tor IP:", getTorIP())
+		case "6":
+			rotateIP()
 
-  case "6":
-   rotateIP()
+		case "7":
+			fmt.Print("Country code (DE, NL, FR...): ")
+			c, _ := reader.ReadString('\n')
+			c = strings.TrimSpace(c)
+			if c != "" {
+				setExitCountry(c)
+			} else {
+				fmt.Println("Invalid country code")
+			}
 
-  case "7":
-   fmt.Print("Country code (DE, NL, FR...): ")
-   c, _ := reader.ReadString('\n')
-   c = strings.TrimSpace(c)
-   if c != "" {
-    setExitCountry(c)
-   } else {
-    fmt.Println("Invalid country code")
-   }
+		case "8":
+			fmt.Print("Rotate every N minutes: ")
+			m, _ := reader.ReadString('\n')
+			m = strings.TrimSpace(m)
+			if m != "" {
+				setAutoRotate(m)
+			} else {
+				fmt.Println("Invalid minutes")
+			}
 
-  case "8":
-   fmt.Print("Rotate every N minutes: ")
-   m, _ := reader.ReadString('\n')
-   m = strings.TrimSpace(m)
-   if m != "" {
-    setAutoRotate(m)
-   } else {
-    fmt.Println("Invalid minutes")
-   }
+		case "0":
+			fmt.Println("Bye 👋")
+			os.Exit(0)
 
-  case "0":
-   fmt.Println("Bye 👋")
-   os.Exit(0)
-
-  default:
-   fmt.Println("Invalid option")
-  }
- }
+		default:
+			fmt.Println("Invalid option")
+		}
+	}
 }
 
 //////////////////////////////////////////////////
