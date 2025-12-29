@@ -1,13 +1,9 @@
-
-
-// ==================================================
-//                 IMPORTS
-// ==================================================
+package main
 
 import (
  "context"
  "fmt"
- "log"
+ "io"
  "net"
  "os"
  "os/exec"
@@ -17,123 +13,124 @@ import (
  "sync"
  "syscall"
  "time"
-
- "github.com/fatih/color"
 )
 
-// ==================================================
-//                 CONSTANTS
-// ==================================================
+//////////////////////////////////////////////////
+// CONFIG
+//////////////////////////////////////////////////
 
 const (
  BaseSocksPort   = 9100
  BaseControlPort = 9200
  BalancerPort    = 10000
- DataDirBase     = "/var/lib/mojenx-tor"
- RotationEvery   = 5 * time.Minute
+
+ DataDirBase = "/var/lib/mojenx-tor"
+
+ RotateInterval  = 5 * time.Minute
+ LatencyTimeout  = 3 * time.Second
+ LatencyLimitMS  = 1500
+ HealthCheckFreq = 30 * time.Second
 )
 
-// ==================================================
-//                 LOGGER
-// ==================================================
+//////////////////////////////////////////////////
+// LOGGER
+//////////////////////////////////////////////////
 
-var (
- logInfo    = color.New(color.FgCyan).PrintfFunc()
- logWarn    = color.New(color.FgYellow).PrintfFunc()
- logError   = color.New(color.FgRed).PrintfFunc()
- logSuccess = color.New(color.FgGreen).PrintfFunc()
-)
+func logInfo(f string, a ...any)  { fmt.Printf("[INFO] "+f+"\n", a...) }
+func logWarn(f string, a ...any)  { fmt.Printf("[WARN] "+f+"\n", a...) }
+func logErr(f string, a ...any)   { fmt.Printf("[ERR ] "+f+"\n", a...) }
+func logOK(f string, a ...any)    { fmt.Printf("[ OK ] "+f+"\n", a...) }
 
-// ==================================================
-//                 MODELS
-// ==================================================
+//////////////////////////////////////////////////
+// MODELS
+//////////////////////////////////////////////////
 
 type TorInstance struct {
  ID          int
  SocksPort   int
  ControlPort int
  DataDir     string
- Cmd         *exec.Cmd
- Alive       bool
- ConnCount   int
- mu          sync.Mutex
+
+ Cmd       *exec.Cmd
+ Alive     bool
+ ConnCount int
+ LatencyMS int64
+
+ mu sync.Mutex
 }
 
 type Manager struct {
- Instances []*TorInstance
  Ctx       context.Context
  Cancel    context.CancelFunc
+ Instances []*TorInstance
 }
 
-// ==================================================
-//                 TOR INSTANCE
-// ==================================================
+//////////////////////////////////////////////////
+// TOR INSTANCE
+//////////////////////////////////////////////////
 
 func (t *TorInstance) Start() error {
- t.Cmd = exec.Command(
+ cmd := exec.Command(
   "tor",
   "--SocksPort", fmt.Sprintf("%d", t.SocksPort),
   "--ControlPort", fmt.Sprintf("%d", t.ControlPort),
   "--DataDirectory", t.DataDir,
  )
 
- t.Cmd.Stdout = os.Stdout
- t.Cmd.Stderr = os.Stderr
+ cmd.Stdout = os.Stdout
+ cmd.Stderr = os.Stderr
 
- err := t.Cmd.Start()
- if err != nil {
+ if err := cmd.Start(); err != nil {
   return err
  }
 
+ t.Cmd = cmd
  t.Alive = true
- logSuccess("[Tor %d] started on SOCKS %d\n", t.ID, t.SocksPort)
+ logOK("Tor #%d started (SOCKS %d)", t.ID, t.SocksPort)
  return nil
 }
 
-func (t *TorInstance) Watch(m *Manager) {
+func (t *TorInstance) Watch() {
  go func() {
   err := t.Cmd.Wait()
-  if err != nil {
-   logWarn("[Tor %d] crashed, restarting...\n", t.ID)
-  }
   t.Alive = false
+  if err != nil {
+   logWarn("Tor #%d crashed, restarting...", t.ID)
+  }
   time.Sleep(2 * time.Second)
   _ = t.Start()
-  t.Watch(m)
+  t.Watch()
  }()
 }
 
-// ==================================================
-//                 CIRCUIT ROTATION
-// ==================================================
-
+Moein, [12/29/2025 3:55 PM]
 func (t *TorInstance) Rotate() {
- conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", t.ControlPort))
+ conn, err := net.DialTimeout(
+  "tcp",
+  fmt.Sprintf("127.0.0.1:%d", t.ControlPort),
+  2*time.Second,
+ )
  if err != nil {
-  logWarn("[Tor %d] control connect failed\n", t.ID)
   return
  }
  defer conn.Close()
 
  fmt.Fprintf(conn, "AUTHENTICATE \"\"\r\nSIGNAL NEWNYM\r\n")
- logInfo("[Tor %d] NEWNYM triggered\n", t.ID)
+ logInfo("Tor #%d rotated circuit", t.ID)
 }
 
-// ==================================================
-//                 MANAGER
-// ==================================================
+//////////////////////////////////////////////////
+// MANAGER
+//////////////////////////////////////////////////
 
 func NewManager() *Manager {
  ctx, cancel := context.WithCancel(context.Background())
- return &Manager{
-  Ctx:    ctx,
-  Cancel: cancel,
- }
+ return &Manager{Ctx: ctx, Cancel: cancel}
 }
 
-func (m *Manager) InitInstances() {
+func (m *Manager) Init() {
  count := runtime.NumCPU()
- logInfo("Detected %d CPU cores, spawning %d Tor instances\n", count, count)
+ logInfo("Detected %d CPU cores", count)
 
  for i := 0; i < count; i++ {
   inst := &TorInstance{
@@ -142,30 +139,31 @@ func (m *Manager) InitInstances() {
    ControlPort: BaseControlPort + i + 1,
    DataDir:     fmt.Sprintf("%s/%d", DataDirBase, i+1),
   }
-  _ = os.MkdirAll(inst.DataDir, 0700)
+  os.MkdirAll(inst.DataDir, 0700)
   m.Instances = append(m.Instances, inst)
  }
 }
 
 func (m *Manager) StartAll() {
- for _, inst := range m.Instances {
-  if err := inst.Start(); err == nil {
-   inst.Watch(m)
+ for _, t := range m.Instances {
+  if err := t.Start(); err == nil {
+   t.Watch()
   }
  }
 }
 
+//////////////////////////////////////////////////
+// ROTATION + HEALTH
+//////////////////////////////////////////////////
+
 func (m *Manager) AutoRotate() {
  go func() {
-  ticker := time.NewTicker(RotationEvery)
-  defer ticker.Stop()
-
-Moein, [12/29/2025 3:25 PM]
+  t := time.NewTicker(RotateInterval)
   for {
    select {
-   case <-ticker.C:
-    for _, inst := range m.Instances {
-     inst.Rotate()
+   case <-t.C:
+    for _, i := range m.Instances {
+     i.Rotate()
     }
    case <-m.Ctx.Done():
     return
@@ -174,11 +172,49 @@ Moein, [12/29/2025 3:25 PM]
  }()
 }
 
-// ==================================================
-//                 LOAD BALANCER
-// ==================================================
+func (m *Manager) HealthCheck() {
+ go func() {
+  t := time.NewTicker(HealthCheckFreq)
+  for {
+   select {
+   case <-t.C:
+    for _, i := range m.Instances {
+     go checkLatency(i)
+    }
+   case <-m.Ctx.Done():
+    return
+   }
+  }
+ }()
+}
 
-func (m *Manager) pickLeastConn() *TorInstance {
+func checkLatency(t *TorInstance) {
+ start := time.Now()
+
+ dialer := net.Dialer{Timeout: LatencyTimeout}
+ conn, err := dialer.Dial(
+  "tcp",
+  fmt.Sprintf("127.0.0.1:%d", t.SocksPort),
+ )
+ if err != nil {
+  return
+ }
+ conn.Close()
+
+ ms := time.Since(start).Milliseconds()
+ t.LatencyMS = ms
+
+ if ms > LatencyLimitMS {
+  logWarn("Tor #%d high latency (%dms), rotating", t.ID, ms)
+  t.Rotate()
+ }
+}
+
+//////////////////////////////////////////////////
+// LOAD BALANCER
+//////////////////////////////////////////////////
+
+func (m *Manager) pick() *TorInstance {
  sort.Slice(m.Instances, func(i, j int) bool {
   return m.Instances[i].ConnCount < m.Instances[j].ConnCount
  })
@@ -188,90 +224,72 @@ func (m *Manager) pickLeastConn() *TorInstance {
 func (m *Manager) StartBalancer() {
  ln, err := net.Listen("tcp", fmt.Sprintf(":%d", BalancerPort))
  if err != nil {
-  log.Fatalf("Balancer failed: %v", err)
+  panic(err)
  }
- logSuccess("Balancer listening on :%d\n", BalancerPort)
+ logOK("Balancer listening on :%d", BalancerPort)
 
  for {
-  conn, err := ln.Accept()
+  c, err := ln.Accept()
   if err != nil {
    continue
   }
 
-  go func(c net.Conn) {
-   inst := m.pickLeastConn()
-   inst.mu.Lock()
-   inst.ConnCount++
-   inst.mu.Unlock()
-
-   defer func() {
-    inst.mu.Lock()
-    inst.ConnCount--
-    inst.mu.Unlock()
-   }()
-
-   target, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", inst.SocksPort))
-   if err != nil {
-    logError("Dial tor failed\n")
-    c.Close()
-    return
-   }
-
-   go ioCopy(target, c)
-   go ioCopy(c, target)
-  }(conn)
+  go m.handleConn(c)
  }
 }
 
-func ioCopy(dst net.Conn, src net.Conn) {
+func (m *Manager) handleConn(c net.Conn) {
+ inst := m.pick()
+
+ inst.mu.Lock()
+ inst.ConnCount++
+ inst.mu.Unlock()
+
+ defer func() {
+  inst.mu.Lock()
+  inst.ConnCount--
+  inst.mu.Unlock()
+ }()
+
+ target, err := net.Dial(
+  "tcp",
+  fmt.Sprintf("127.0.0.1:%d", inst.SocksPort),
+ )
+ if err != nil {
+  c.Close()
+  return
+ }
+
+ go pipe(target, c)
+ go pipe(c, target)
+}
+
+func pipe(dst, src net.Conn) {
  defer dst.Close()
  defer src.Close()
- buf := make([]byte, 32*1024)
- for {
-  n, err := src.Read(buf)
-  if err != nil {
-   return
-  }
-  dst.Write(buf[:n])
- }
+ io.Copy(dst, src)
 }
 
-// ==================================================
-//                 ASCII LOGO
-// ==================================================
-
-func printLogo() {
- color.New(color.FgMagenta).Println(
-███╗   ███╗ ██████╗      ██╗███████╗███╗   ██╗██╗  ██╗
-████╗ ████║██╔═══██╗     ██║██╔════╝████╗  ██║╚██╗██╔╝
-██╔████╔██║██║   ██║     ██║█████╗  ██╔██╗ ██║ ╚███╔╝
-██║╚██╔╝██║██║   ██║██   ██║██╔══╝  ██║╚██╗██║ ██╔██╗
-██║ ╚═╝ ██║╚██████╔╝╚█████╔╝███████╗██║ ╚████║██╔╝ ██╗
-╚═╝     ╚═╝ ╚═════╝  ╚════╝ ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝
-          MojenX Tor - Multi Instance Manager
-)
-}
-
-// ==================================================
-//                 MAIN
-// ==================================================
+//////////////////////////////////////////////////
+// MAIN
+//////////////////////////////////////////////////
 
 func main() {
- printLogo()
+ fmt.Println("mojenx-tor | multi-instance tor manager")
 
- manager := NewManager()
- manager.InitInstances()
- manager.StartAll()
- manager.AutoRotate()
+ m := NewManager()
+ m.Init()
+ m.StartAll()
+ m.AutoRotate()
+ m.HealthCheck()
 
- go manager.StartBalancer()
+ go m.StartBalancer()
 
  sig := make(chan os.Signal, 1)
  signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
  <-sig
 
- logWarn("Shutting down MojenX Tor...\n")
- manager.Cancel()
- time.Sleep(1 * time.Second)
+ logWarn("Shutting down...")
+ m.Cancel()
+ time.Sleep(time.Second)
 }
-
