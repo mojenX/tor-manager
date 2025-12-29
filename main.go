@@ -9,6 +9,7 @@ import (
  "os/exec"
  "strings"
  "time"
+ "io" // NEW: needed for io.EOF check
 )
 
 //////////////////////////////////////////////////
@@ -251,7 +252,17 @@ func menu() {
 
  for {
   fmt.Print("\nSelect option: ")
-  choice, _ := reader.ReadString('\n')
+  // --- CHANGED: capture the error and handle EOF to stop the loop gracefully ---
+  choice, err := reader.ReadString('\n')
+  if err != nil {
+   if err == io.EOF {
+    fmt.Println("Bye 👋")
+    return // exit the menu loop when stdin is closed
+   }
+   fmt.Println("Input error:", err)
+   time.Sleep(200 * time.Millisecond) // small delay to avoid tight loop on repeated errors
+   continue
+  }
   choice = strings.TrimSpace(choice)
 
   // 🔥 فیکس اصلی: ورودی خالی نادیده گرفته می‌شود
