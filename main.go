@@ -103,7 +103,6 @@ func (t *TorInstance) Watch() {
  }()
 }
 
-Moein, [12/29/2025 3:55 PM]
 func (t *TorInstance) Rotate() {
  conn, err := net.DialTimeout(
   "tcp",
