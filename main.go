@@ -30,7 +30,8 @@ const (
 //////////////////////////////////////////////////
 
 func logLine(level, msg string) {
- line := fmt.Sprintf("[%s] [%s] %s\n",
+ line := fmt.Sprintf(
+  "[%s] [%s] %s\n",
   time.Now().Format("2006-01-02 15:04:05"),
   level,
   msg,
@@ -211,7 +212,7 @@ for _, l := range strings.Split(current, "\n") {
 }
 
 //////////////////////////////////////////////////
-// STATIC UI (ZERO FLICKER)
+// STATIC UI (NO FLICKER)
 //////////////////////////////////////////////////
 
 func printHeader() {
@@ -238,7 +239,7 @@ func printMenu() {
 }
 
 //////////////////////////////////////////////////
-// MAIN LOOP (NO CLEAR, NO REDRAW)
+// MAIN LOOP (SAFE INPUT)
 //////////////////////////////////////////////////
 
 func menu() {
@@ -252,6 +253,11 @@ func menu() {
   fmt.Print("\nSelect option: ")
   choice, _ := reader.ReadString('\n')
   choice = strings.TrimSpace(choice)
+
+  // 🔥 فیکس اصلی: ورودی خالی نادیده گرفته می‌شود
+  if choice == "" {
+   continue
+  }
 
   switch choice {
 
@@ -279,12 +285,22 @@ func menu() {
   case "7":
    fmt.Print("Country code (DE, NL, FR...): ")
    c, _ := reader.ReadString('\n')
-   setExitCountry(strings.TrimSpace(c))
+   c = strings.TrimSpace(c)
+   if c != "" {
+    setExitCountry(c)
+   } else {
+    fmt.Println("Invalid country code")
+   }
 
   case "8":
    fmt.Print("Rotate every N minutes: ")
    m, _ := reader.ReadString('\n')
-   setAutoRotate(strings.TrimSpace(m))
+   m = strings.TrimSpace(m)
+   if m != "" {
+    setAutoRotate(m)
+   } else {
+    fmt.Println("Invalid minutes")
+   }
 
   case "0":
    fmt.Println("Bye 👋")
