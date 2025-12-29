@@ -4,7 +4,6 @@ import (
  "bufio"
  "bytes"
  "fmt"
- "io"
  "net"
  "os"
  "os/exec"
@@ -13,17 +12,17 @@ import (
 )
 
 //////////////////////////////////////////////////
-// GLOBAL CONFIG
+// CONFIG
 //////////////////////////////////////////////////
 
 const (
- TOR_SERVICE    = "tor"
- SOCKS_ADDR     = "127.0.0.1:9050"
- CONTROL_ADDR   = "127.0.0.1:9051"
- TORRC_PATH     = "/etc/tor/torrc"
- CRON_TAG       = "# MOJENX_TOR_ROTATE"
- CHECK_IP_URL   = "https://api.ipify.org"
- LOG_FILE       = "/var/log/mojenx-tor.log"
+ TOR_SERVICE  = "tor"
+ SOCKS_ADDR   = "127.0.0.1:9050"
+ CTRL_ADDR    = "127.0.0.1:9051"
+ TORRC_PATH   = "/etc/tor/torrc"
+ CRON_TAG     = "#MOJENX_ROTATE"
+ CHECK_IP_URL = "https://api.ipify.org"
+ LOG_FILE     = "/var/log/mojenx-tor.log"
 )
 
 //////////////////////////////////////////////////
@@ -31,14 +30,12 @@ const (
 //////////////////////////////////////////////////
 
 func logLine(level, msg string) {
- line := fmt.Sprintf(
-  "[%s] [%s] %s\n",
+ line := fmt.Sprintf("[%s] [%s] %s\n",
   time.Now().Format("2006-01-02 15:04:05"),
   level,
   msg,
  )
  fmt.Print(line)
-
  f, err := os.OpenFile(LOG_FILE, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
  if err == nil {
   f.WriteString(line)
@@ -46,28 +43,9 @@ func logLine(level, msg string) {
  }
 }
 
-func logInfo(m string)  { logLine("INFO", m) }
-func logWarn(m string)  { logLine("WARN", m) }
-func logError(m string) { logLine("ERROR", m) }
-
-//////////////////////////////////////////////////
-// TERMINAL UI
-//////////////////////////////////////////////////
-
-func clearScreen() {
- fmt.Print("\033[H\033[2J")
-}
-
-func pause() {
- fmt.Print("\nPress ENTER to continue...")
- bufio.NewReader(os.Stdin).ReadBytes('\n')
-}
-
-func banner() {
- fmt.Println(
-          MOJENX TOR MANAGER
-)
-}
+func logInfo(m string) { logLine("INFO", m) }
+func logWarn(m string) { logLine("WARN", m) }
+func logErr(m string)  { logLine("ERROR", m) }
 
 //////////////////////////////////////////////////
 // SYSTEM UTILS
@@ -82,7 +60,7 @@ func runCmd(name string, args ...string) (string, error) {
  return out.String(), err
 }
 
-func requireRoot() {
+func mustRoot() {
  if os.Geteuid() != 0 {
   fmt.Println("Run as root")
   os.Exit(1)
@@ -90,7 +68,7 @@ func requireRoot() {
 }
 
 //////////////////////////////////////////////////
-// TOR SERVICE CONTROL
+// TOR CONTROL
 //////////////////////////////////////////////////
 
 func torInstalled() bool {
@@ -98,20 +76,9 @@ func torInstalled() bool {
  return err == nil
 }
 
-func torStart() {
- logInfo("Starting Tor service")
- runCmd("systemctl", "start", TOR_SERVICE)
-}
-
-func torStop() {
- logInfo("Stopping Tor service")
- runCmd("systemctl", "stop", TOR_SERVICE)
-}
-
-func torRestart() {
- logInfo("Restarting Tor service")
- runCmd("systemctl", "restart", TOR_SERVICE)
-}
+func torStart()   { runCmd("systemctl", "start", TOR_SERVICE) }
+func torStop()    { runCmd("systemctl", "stop", TOR_SERVICE) }
+func torRestart() { runCmd("systemctl", "restart", TOR_SERVICE) }
 
 func torStatus() string {
  out, _ := runCmd("systemctl", "is-active", TOR_SERVICE)
@@ -119,29 +86,23 @@ func torStatus() string {
 }
 
 //////////////////////////////////////////////////
-// TOR IP / SOCKS
+// TOR IP
 //////////////////////////////////////////////////
 
-func torSocksAlive() bool {
- conn, err := net.DialTimeout("tcp", SOCKS_ADDR, 2*time.Second)
+func socksAlive() bool {
+ c, err := net.DialTimeout("tcp", SOCKS_ADDR, 2*time.Second)
  if err != nil {
   return false
  }
- conn.Close()
+ c.Close()
  return true
 }
 
 func getTorIP() string {
- if !torSocksAlive() {
+ if !socksAlive() {
   return "Tor not running"
  }
-
- cmd := exec.Command(
-  "curl",
-  "-s",
-  "--socks5-hostname", SOCKS_ADDR,
-  CHECK_IP_URL,
- )
+ cmd := exec.Command("curl", "-s", "--socks5-hostname", SOCKS_ADDR, CHECK_IP_URL)
  out, err := cmd.Output()
  if err != nil {
   return "Error"
@@ -150,85 +111,86 @@ func getTorIP() string {
 }
 
 //////////////////////////////////////////////////
-// CONTROL PORT / NEWNYM
+// NEWNYM
 //////////////////////////////////////////////////
 
 func rotateIP() {
- conn, err := net.Dial("tcp", CONTROL_ADDR)
+ c, err := net.Dial("tcp", CTRL_ADDR)
  if err != nil {
-  logError("ControlPort not reachable")
-  fmt.Println("ControlPort not available")
+  fmt.Println("ControlPort not reachable")
   return
  }
- defer conn.Close()
-
-Moein, [12/29/2025 4:38 PM]
-fmt.Fprintf(conn, "AUTHENTICATE \"\"\r\nSIGNAL NEWNYM\r\n")
- logInfo("NEWNYM signal sent")
- fmt.Println("Tor IP rotated")
+ defer c.Close()
+ fmt.Fprintf(c, "AUTHENTICATE \"\"\r\nSIGNAL NEWNYM\r\n")
+ logInfo("NEWNYM sent")
 }
 
 //////////////////////////////////////////////////
-// TORRC MANAGEMENT
+// TORRC
 //////////////////////////////////////////////////
 
-func readTorrc() []string {
+func setCountry(code string) {
  data, _ := os.ReadFile(TORRC_PATH)
- return strings.Split(string(data), "\n")
-}
+ lines := strings.Split(string(data), "\n")
 
-func writeTorrc(lines []string) {
- os.WriteFile(TORRC_PATH, []byte(strings.Join(lines, "\n")), 0644)
-}
-
-func cleanTorrc() []string {
  var out []string
- for _, l := range readTorrc() {
-  if strings.HasPrefix(l, "ExitNodes") ||
-   strings.HasPrefix(l, "StrictNodes") {
+ for _, l := range lines {
+  if strings.HasPrefix(l, "ExitNodes") || strings.HasPrefix(l, "StrictNodes") {
    continue
   }
   out = append(out, l)
  }
- return out
-}
 
-func setExitCountry(code string) {
- lines := cleanTorrc()
- lines = append(lines,
-  fmt.Sprintf("ExitNodes {%s}", strings.ToUpper(code)),
+ out = append(out,
+  "ExitNodes {"+strings.ToUpper(code)+"}",
   "StrictNodes 1",
  )
- writeTorrc(lines)
- logInfo("Exit country set to " + code)
+
+ os.WriteFile(TORRC_PATH, []byte(strings.Join(out, "\n")), 0644)
  torRestart()
+ logInfo("Exit country set to " + code)
 }
 
 //////////////////////////////////////////////////
-// CRON MANAGEMENT
+// CRON
 //////////////////////////////////////////////////
 
-func setAutoRotate(minutes string) {
- entry := fmt.Sprintf(
-  "*/%s * * * * printf \"AUTHENTICATE \\\"\\\"\\r\\nSIGNAL NEWNYM\\r\\n\" | nc 127.0.0.1 9051 %s",
-  minutes,
-  CRON_TAG,
- )
+func setAutoRotate(min string) {
+ line := "*/" + min + " * * * * printf \"AUTHENTICATE \\\"\\\"\\r\\nSIGNAL NEWNYM\\r\\n\" | nc 127.0.0.1 9051 " + CRON_TAG
+ old, _ := runCmd("crontab", "-l")
 
- current, _ := runCmd("crontab", "-l")
  var out []string
- for _, l := range strings.Split(current, "\n") {
+ for _, l := range strings.Split(old, "\n") {
   if !strings.Contains(l, CRON_TAG) {
    out = append(out, l)
   }
  }
- out = append(out, entry)
+ out = append(out, line)
 
  cmd := exec.Command("crontab", "-")
  cmd.Stdin = strings.NewReader(strings.Join(out, "\n"))
  cmd.Run()
 
- logInfo("Auto rotate set every " + minutes + " minutes")
+ logInfo("Auto rotate set every " + min + " minutes")
+}
+
+//////////////////////////////////////////////////
+// UI
+//////////////////////////////////////////////////
+
+func clear() {
+ fmt.Print("\033[H\033[2J")
+}
+
+func pause() {
+ fmt.Print("\nPress ENTER...")
+ bufio.NewReader(os.Stdin).ReadBytes('\n')
+}
+
+func banner() {
+ fmt.Println("===================================")
+ fmt.Println("        MOJENX TOR MANAGER          ")
+ fmt.Println("===================================")
 }
 
 //////////////////////////////////////////////////
@@ -236,74 +198,57 @@ func setAutoRotate(minutes string) {
 //////////////////////////////////////////////////
 
 func menu() {
- reader := bufio.NewReader(os.Stdin)
+ r := bufio.NewReader(os.Stdin)
 
  for {
-  clearScreen()
+  clear()
   banner()
 
   fmt.Println("Tor Installed :", torInstalled())
-  fmt.Println("Tor Service   :", torStatus())
-  fmt.Println("Tor SOCKS     :", torSocksAlive())
+  fmt.Println("Tor Status    :", torStatus())
+  fmt.Println("SOCKS Alive   :", socksAlive())
   fmt.Println("Current IP    :", getTorIP())
-  fmt.Println("--------------------------------------")
-  fmt.Println("1) Install Tor")
-  fmt.Println("2) Start Tor")
-  fmt.Println("3) Stop Tor")
-  fmt.Println("4) Restart Tor")
-  fmt.Println("5) Show Tor Status")
-  fmt.Println("6) Show Tor IP")
-  fmt.Println("7) Rotate IP (NEWNYM)")
-  fmt.Println("8) Set Exit Country")
-  fmt.Println("9) Set Auto Rotate (cron)")
+  fmt.Println("-----------------------------------")
+  fmt.Println("1) Start Tor")
+  fmt.Println("2) Stop Tor")
+  fmt.Println("3) Restart Tor")
+  fmt.Println("4) Show Tor Status")
+  fmt.Println("5) Show IP")
+  fmt.Println("6) Rotate IP")
+  fmt.Println("7) Set Exit Country")
+  fmt.Println("8) Set Auto Rotate")
   fmt.Println("0) Exit")
-  fmt.Print("\nEnter choice: ")
+  fmt.Print("\nSelect: ")
 
-  choice, _ := reader.ReadString('\n')
-  choice = strings.TrimSpace(choice)
+  c, _ := r.ReadString('\n')
+  c = strings.TrimSpace(c)
 
-  switch choice {
-
+  switch c {
   case "1":
-   runCmd("apt", "install", "-y", "tor")
-
-  case "2":
    torStart()
-
-  case "3":
+  case "2":
    torStop()
-
-  case "4":
+  case "3":
    torRestart()
-
+  case "4":
+   fmt.Println("Status:", torStatus())
   case "5":
-   out, _ := runCmd("systemctl", "status", TOR_SERVICE, "--no-pager")
-   fmt.Println(out)
-
+   fmt.Println("IP:", getTorIP())
   case "6":
-   fmt.Println("Tor IP:", getTorIP())
-
-  case "7":
    rotateIP()
-
+  case "7":
+   fmt.Print("Country code: ")
+   x, _ := r.ReadString('\n')
+   setCountry(strings.TrimSpace(x))
   case "8":
-   fmt.Print("Country code (DE, NL, FR...): ")
-   c, _ := reader.ReadString('\n')
-   setExitCountry(strings.TrimSpace(c))
-
-  case "9":
-   fmt.Print("Rotate every N minutes: ")
-   m, _ := reader.ReadString('\n')
+   fmt.Print("Minutes: ")
+   m, _ := r.ReadString('\n')
    setAutoRotate(strings.TrimSpace(m))
-
   case "0":
-   logInfo("Exit requested")
    os.Exit(0)
-
   default:
    fmt.Println("Invalid choice")
   }
-
   pause()
  }
 }
@@ -313,6 +258,6 @@ func menu() {
 //////////////////////////////////////////////////
 
 func main() {
- requireRoot()
+ mustRoot()
  menu()
 }
