@@ -13,7 +13,7 @@ import (
 )
 
 //////////////////////////////////////////////////
-// GLOBAL CONFIG
+// CONSTANTS
 //////////////////////////////////////////////////
 
 const (
@@ -22,12 +22,12 @@ const (
  CTRL_ADDR    = "127.0.0.1:9051"
  TORRC_PATH   = "/etc/tor/torrc"
  CHECK_IP_URL = "https://api.ipify.org"
- CRON_TAG     = "#MOJENX_ROTATE"
+ CRON_TAG     = "#MOJENX_TOR_ROTATE"
  LOG_FILE     = "/var/log/mojenx-tor.log"
 )
 
 //////////////////////////////////////////////////
-// GLOBAL STATE (CACHE)
+// GLOBAL CACHE STATE
 //////////////////////////////////////////////////
 
 var (
@@ -43,7 +43,7 @@ var (
 // LOGGER
 //////////////////////////////////////////////////
 
-func logLine(level, msg string) {
+func logLine(level string, msg string) {
  line := fmt.Sprintf(
   "[%s] [%s] %s\n",
   time.Now().Format("2006-01-02 15:04:05"),
@@ -60,9 +60,9 @@ func logLine(level, msg string) {
  }
 }
 
-func logInfo(m string) { logLine("INFO", m) }
-func logWarn(m string) { logLine("WARN", m) }
-func logErr(m string)  { logLine("ERROR", m) }
+func logInfo(msg string) { logLine("INFO", msg) }
+func logWarn(msg string) { logLine("WARN", msg) }
+func logErr(msg string)  { logLine("ERROR", msg) }
 
 //////////////////////////////////////////////////
 // BASIC UTILS
@@ -70,7 +70,7 @@ func logErr(m string)  { logLine("ERROR", m) }
 
 func mustRoot() {
  if os.Geteuid() != 0 {
-  fmt.Println("Run as root")
+  fmt.Println("Please run as root")
   os.Exit(1)
  }
 }
@@ -88,7 +88,7 @@ func runCmd(name string, args ...string) (string, error) {
 // TERMINAL UI
 //////////////////////////////////////////////////
 
-func clear() {
+func clearScreen() {
  fmt.Print("\033[H\033[2J")
 }
 
@@ -113,35 +113,35 @@ func torInstalled() bool {
 }
 
 func torStart() {
- logInfo("Starting Tor")
+ logInfo("Starting Tor service")
  runCmd("systemctl", "start", TOR_SERVICE)
 }
 
 func torStop() {
- logInfo("Stopping Tor")
+ logInfo("Stopping Tor service")
  runCmd("systemctl", "stop", TOR_SERVICE)
 }
 
 func torRestart() {
- logInfo("Restarting Tor")
+ logInfo("Restarting Tor service")
  runCmd("systemctl", "restart", TOR_SERVICE)
 }
 
-func getTorStatus() string {
+func torStatusRaw() string {
  out, _ := runCmd("systemctl", "is-active", TOR_SERVICE)
  return strings.TrimSpace(out)
 }
 
 //////////////////////////////////////////////////
-// SOCKS & IP (HEAVY OPS)
+// SOCKS & IP (LOW LEVEL)
 //////////////////////////////////////////////////
 
 func socksAliveRaw() bool {
- c, err := net.DialTimeout("tcp", SOCKS_ADDR, 2*time.Second)
+ conn, err := net.DialTimeout("tcp", SOCKS_ADDR, 2*time.Second)
  if err != nil {
   return false
  }
- c.Close()
+ conn.Close()
  return true
 }
 
@@ -161,20 +161,20 @@ func fetchTorIP() string {
  if err != nil {
   return "error"
  }
+
  return strings.TrimSpace(string(out))
 }
 
 //////////////////////////////////////////////////
-// CACHE UPDATE (BACKGROUND)
+// CACHE REFRESH (BACKGROUND)
 //////////////////////////////////////////////////
 
-func refreshCache() {
+func refreshCacheLoop() {
  for {
   cacheMu.Lock()
 
-Moein, [12/29/2025 4:55 PM]
-if time.Since(lastStatUpdate) > 5*time.Second {
-   cachedStatus = getTorStatus()
+  if time.Since(lastStatUpdate) > 5*time.Second {
+   cachedStatus = torStatusRaw()
    cachedSOCKS = socksAliveRaw()
    lastStatUpdate = time.Now()
   }
@@ -185,24 +185,25 @@ if time.Since(lastStatUpdate) > 5*time.Second {
   }
 
   cacheMu.Unlock()
+
   time.Sleep(1 * time.Second)
  }
 }
 
 //////////////////////////////////////////////////
-// CONTROL PORT
+// CONTROL PORT (NEWNYM)
 //////////////////////////////////////////////////
 
 func rotateIP() {
- c, err := net.Dial("tcp", CTRL_ADDR)
+ conn, err := net.Dial("tcp", CTRL_ADDR)
  if err != nil {
   fmt.Println("ControlPort not reachable")
-  logErr("ControlPort unreachable")
+  logErr("ControlPort not reachable")
   return
  }
- defer c.Close()
+ defer conn.Close()
 
- fmt.Fprintf(c, "AUTHENTICATE \"\"\r\nSIGNAL NEWNYM\r\n")
+ fmt.Fprintf(conn, "AUTHENTICATE \"\"\r\nSIGNAL NEWNYM\r\n")
  logInfo("NEWNYM signal sent")
  fmt.Println("Tor IP rotated")
 }
@@ -242,7 +243,7 @@ func setExitCountry(code string) {
 }
 
 //////////////////////////////////////////////////
-// CRON ROTATION
+// CRON AUTO ROTATION
 //////////////////////////////////////////////////
 
 func setAutoRotate(minutes string) {
@@ -268,7 +269,7 @@ func setAutoRotate(minutes string) {
 }
 
 //////////////////////////////////////////////////
-// SAFE UI DISPLAY (NO FLICKER)
+// SAFE HEADER (NO FLICKER)
 //////////////////////////////////////////////////
 
 func showHeader() {
@@ -286,10 +287,10 @@ func showHeader() {
 //////////////////////////////////////////////////
 
 func menu() {
- r := bufio.NewReader(os.Stdin)
+ reader := bufio.NewReader(os.Stdin)
 
  for {
-  clear()
+  clearScreen()
   banner()
   showHeader()
 
@@ -305,7 +306,7 @@ func menu() {
   fmt.Println("0) Exit")
   fmt.Print("\nSelect option: ")
 
-  choice, _ := r.ReadString('\n')
+  choice, _ := reader.ReadString('\n')
   choice = strings.TrimSpace(choice)
 
   switch choice {
@@ -320,7 +321,7 @@ func menu() {
    torRestart()
 
   case "4":
-   fmt.Println("Tor Status:", getTorStatus())
+   fmt.Println("Tor Status:", torStatusRaw())
 
   case "5":
    fmt.Println("Tor IP:", fetchTorIP())
@@ -330,16 +331,16 @@ func menu() {
 
   case "7":
    fmt.Print("Country code (DE, NL, FR...): ")
-   c, _ := r.ReadString('\n')
+   c, _ := reader.ReadString('\n')
    setExitCountry(strings.TrimSpace(c))
 
   case "8":
    fmt.Print("Rotate every N minutes: ")
-   m, _ := r.ReadString('\n')
+   m, _ := reader.ReadString('\n')
    setAutoRotate(strings.TrimSpace(m))
 
   case "0":
-   logInfo("Exit")
+   logInfo("Exit requested")
    os.Exit(0)
 
   default:
@@ -356,7 +357,6 @@ func menu() {
 
 func main() {
  mustRoot()
- go refreshCache()
+ go refreshCacheLoop()
  menu()
 }
-
