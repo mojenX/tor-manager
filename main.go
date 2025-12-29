@@ -29,9 +29,8 @@ const (
 // LOGGER
 //////////////////////////////////////////////////
 
-func logLine(level string, msg string) {
- line := fmt.Sprintf(
-  "[%s] [%s] %s\n",
+func logLine(level, msg string) {
+ line := fmt.Sprintf("[%s] [%s] %s\n",
   time.Now().Format("2006-01-02 15:04:05"),
   level,
   msg,
@@ -67,15 +66,6 @@ func runCmd(name string, args ...string) (string, error) {
  cmd.Stderr = &out
  err := cmd.Run()
  return out.String(), err
-}
-
-func pause(reader *bufio.Reader) {
- fmt.Print("\nPress ENTER to continue...")
- reader.ReadString('\n')
-}
-
-func clearScreen() {
- fmt.Print("\033[H\033[2J")
 }
 
 //////////////////////////////////////////////////
@@ -155,7 +145,7 @@ func rotateIP() {
 
  fmt.Fprintf(conn, "AUTHENTICATE \"\"\r\nSIGNAL NEWNYM\r\n")
  logInfo("NEWNYM signal sent")
- fmt.Println("Tor IP rotated")
+ fmt.Println("✔ Tor IP rotated")
 }
 
 //////////////////////////////////////////////////
@@ -190,6 +180,7 @@ func setExitCountry(code string) {
  writeTorrc(out)
  logInfo("Exit country set to " + code)
  torRestart()
+ fmt.Println("✔ Exit country updated")
 }
 
 //////////////////////////////////////////////////
@@ -204,7 +195,7 @@ func setAutoRotate(minutes string) {
  current, _ := runCmd("crontab", "-l")
  var out []string
 
- for _, l := range strings.Split(current, "\n") {
+for _, l := range strings.Split(current, "\n") {
   if !strings.Contains(l, CRON_TAG) {
    out = append(out, l)
   }
@@ -216,24 +207,24 @@ func setAutoRotate(minutes string) {
  cmd.Run()
 
  logInfo("Auto rotate every " + minutes + " minutes")
+ fmt.Println("✔ Auto rotate enabled")
 }
 
 //////////////////////////////////////////////////
-// UI RENDER
+// STATIC UI (ZERO FLICKER)
 //////////////////////////////////////////////////
 
-func renderHeader() {
+func printHeader() {
  fmt.Println("======================================")
  fmt.Println("        MOJENX TOR MANAGER             ")
  fmt.Println("======================================")
  fmt.Println("Tor Installed :", torInstalled())
  fmt.Println("Tor Status    :", torStatus())
  fmt.Println("SOCKS Alive   :", socksAlive())
- fmt.Println("Current IP    :", getTorIP())
  fmt.Println("--------------------------------------")
 }
 
-func renderMenu() {
+func printMenu() {
  fmt.Println("1) Start Tor")
  fmt.Println("2) Stop Tor")
  fmt.Println("3) Restart Tor")
@@ -243,20 +234,21 @@ func renderMenu() {
  fmt.Println("7) Set Exit Country")
  fmt.Println("8) Set Auto Rotate (cron)")
  fmt.Println("0) Exit")
+ fmt.Println("--------------------------------------")
 }
 
 //////////////////////////////////////////////////
-// MAIN MENU LOOP (NO FLICKER)
+// MAIN LOOP (NO CLEAR, NO REDRAW)
 //////////////////////////////////////////////////
 
 func menu() {
  reader := bufio.NewReader(os.Stdin)
 
- for {
-  clearScreen()
-  renderHeader()
-  renderMenu()
+ // فقط یک‌بار
+ printHeader()
+ printMenu()
 
+ for {
   fmt.Print("\nSelect option: ")
   choice, _ := reader.ReadString('\n')
   choice = strings.TrimSpace(choice)
@@ -265,12 +257,15 @@ func menu() {
 
   case "1":
    torStart()
+   fmt.Println("✔ Tor started")
 
   case "2":
    torStop()
+   fmt.Println("✔ Tor stopped")
 
   case "3":
    torRestart()
+   fmt.Println("✔ Tor restarted")
 
   case "4":
    fmt.Println("Tor Status:", torStatus())
@@ -292,14 +287,12 @@ func menu() {
    setAutoRotate(strings.TrimSpace(m))
 
   case "0":
-   logInfo("Exit requested")
+   fmt.Println("Bye 👋")
    os.Exit(0)
 
   default:
    fmt.Println("Invalid option")
   }
-
-  pause(reader)
  }
 }
 
